@@ -1,9 +1,10 @@
-/*--------------------------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See https://go.microsoft.com/fwlink/?linkid=2090316 for license information.
- *-------------------------------------------------------------------------------------------------------------*/
+use epher::argument_parser;
+use epher::envinfo::ENV_INFO;
 
 fn main() {
-    let name = "VS Code Remote - Containers";
-    println!("Hello, {}!", name);
+
+    let args = argument_parser::parse_args();
+    args.exec();
+    
+    //println!("{}", ENV_INFO.config.toml());
 }
