@@ -1,14 +1,13 @@
 use std::collections::HashMap;
-use std::fmt::format;
-use std::fs;
+use std::fmt::{Display, Formatter};
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
-use ansi_term::{ANSIGenericString, Color};
-use ansi_term::Color::{Red, White, Yellow};
-use inquire::Confirm;
-use inquire::error::InquireResult;
-use serde::__private::de::Content::F64;
+use std::path::PathBuf;
+
+use ansi_term::ANSIGenericString;
+use ansi_term::Color::{Red, Yellow};
 use walkdir::WalkDir;
+use dialoguer::{theme::ColorfulTheme, FuzzySelect};
+
 use crate::argument_parser::Argument;
 use crate::datasize::{Datasize, FORMAT_BIN};
 
@@ -62,8 +61,17 @@ macro_rules! round {
     };
 }
 
-fn format_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>, origin: Option<&PathBuf>) -> String {
+fn get_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>, origin: Option<&PathBuf>) -> (String, f64, String, String) {
     let (s, u) = size.with_unit_string(100.0, FORMAT_BIN);
+    let display_path = if let Some(o) = origin {
+        path.strip_prefix(o).unwrap().to_str().unwrap()
+    } else { path.to_str().unwrap() };
+    (display_path.to_string(), s, u, if let Some(q) = quota_size {
+        round!((size.value as f64) / (q.value as f64) * 100.0, 3 ,f64).to_string() + "%"
+    } else { String::new() })
+}
+fn format_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>, origin: Option<&PathBuf>) -> String {
+    let (display_path, s, u, usage) = get_path_detail(path, size, quota_size, origin);
     let mark = if path.is_dir() {
         "dir"
     } else if path.is_file() {
@@ -71,12 +79,8 @@ fn format_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasi
     } else if path.is_symlink() {
         "sym"
     } else { "?" };
-    let display_path = if let Some(o) = origin {
-        path.strip_prefix(o).unwrap().display()
-    } else { path.display() };
-    format!("{:<5}{:<15}: {:>7}{:<3} {:>7}", mark, display_path, s, u, if let Some(q) = quota_size {
-        round!((size.value as f64) / (q.value as f64) * 100.0, 3 ,f64).to_string()+"%"
-    } else { String::new() })
+
+    format!("{:<5}{:<15} : {:>7}{:<3} {:>7}", mark, display_path, s, u, usage)
 }
 fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size: &Option<Datasize>) {
     //let mut size: u64 = 0;
@@ -111,7 +115,7 @@ fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size:
 
     for (i, &(path, size)) in size_vec.iter().enumerate() {
         total_size += size;
-        let a = format_path_detail(path, Datasize::new(*size), quota_size,Some(origin));
+        let a = format_path_detail(path, Datasize::new(*size), quota_size, Some(origin));
         let output = match size_vec.len() - i - 1 {
             0 => Red.bold().paint(a),
             1 => Yellow.bold().paint(a),
@@ -121,24 +125,35 @@ fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size:
     }
 
 
-    println!("Total:\n{}", format_path_detail(origin, Datasize::new(total_size), quota_size,None));
-    let (largest_path, _) = size_vec.last().unwrap();
-    if largest_path.is_dir() {
-        let ans = Confirm::new(
-            format!("{} 内を更に探索しますか？ (Would you like to explore further inside {} ?)",
-                    largest_path.display(), largest_path.display()
-            ).as_str()
-        )
-            .with_default(false)
-            .with_help_message("yで続行、nで終了")
-            .prompt();
-        match ans {
-            Ok(true) => {
-                size_cmd(ctx, largest_path, include_symlink, quota_size);
+    println!("Total:\n{}", format_path_detail(origin, Datasize::new(total_size), quota_size, None));
+    size_vec = size_vec.into_iter().filter(|(p, _)| {
+        p.is_dir()
+    }).collect();
+    if !size_vec.is_empty() {
+        size_vec.reverse();
+
+        let theme = ColorfulTheme::default();
+        let mut selection_builder = FuzzySelect::with_theme(&theme)
+            .with_prompt("更に探索するディレクトリを選択してください")
+            .item("quit (終了)")
+            .default(0)
+            .max_length(5);
+        for (p, s) in size_vec.clone() {
+            let a = get_path_detail(p, Datasize::new(*s), quota_size, Some(origin));
+            selection_builder = selection_builder.clone().item(format!("{} {}{} {}", a.0, a.1, a.2, a.3))
+        }
+        let result = selection_builder.interact_opt();
+        match result {
+            Ok(Some(i)) => {
+                if i == 0 {
+                    return;
+                }
+                size_cmd(ctx, size_vec[i - 1].0, include_symlink, quota_size);
             }
             _ => {}
         }
     }
+
 }
 
 
