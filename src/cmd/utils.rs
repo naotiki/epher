@@ -74,8 +74,8 @@ fn format_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasi
     let display_path = if let Some(o) = origin {
         path.strip_prefix(o).unwrap().display()
     } else { path.display() };
-    format!("{:<5}{:<15}: {:>7}{:<3} {:>6}%", mark, display_path, s, u, if let Some(q) = quota_size {
-        round!((size.value as f64) / (q.value as f64) * 100.0, 3 ,f64).to_string()
+    format!("{:<5}{:<15}: {:>7}{:<3} {:>7}", mark, display_path, s, u, if let Some(q) = quota_size {
+        round!((size.value as f64) / (q.value as f64) * 100.0, 3 ,f64).to_string()+"%"
     } else { String::new() })
 }
 fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size: &Option<Datasize>) {
