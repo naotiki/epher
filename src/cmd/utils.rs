@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
+use std::fs::FileType;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
@@ -43,13 +44,17 @@ pub enum UtilsCommand {
             value_parser = is_datasize
         )]
         quota_size: Option<Datasize>,
+        #[arg(
+            short='H', long,
+        )]
+        human_readable:bool
     },
     Subsub2,
 }
 pub fn utils_cmd(ctx: &Argument, cmd: &UtilsCommand) {
     match cmd {
-        UtilsCommand::Size { path, include_symlink, quota_size } => {
-            size_cmd(ctx, path, *include_symlink, quota_size)
+        UtilsCommand::Size { path, include_symlink, quota_size,human_readable } => {
+            size_cmd(ctx, path, *include_symlink, quota_size,*human_readable)
         }
         UtilsCommand::Subsub2 => {}
     }
@@ -61,8 +66,8 @@ macro_rules! round {
     };
 }
 
-fn get_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>, origin: Option<&PathBuf>) -> (String, f64, String, String) {
-    let (s, u) = size.with_unit_string(100.0, FORMAT_BIN);
+fn get_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>, origin: Option<&PathBuf>,human_readable:&bool) -> (String, f64, String, String) {
+    let (s, u) = if *human_readable {size.with_unit_string(100.0, FORMAT_BIN) } else { (size.value as f64,String::from(""))};
     let display_path = if let Some(o) = origin {
         path.strip_prefix(o).unwrap().to_str().unwrap()
     } else { path.to_str().unwrap() };
@@ -70,8 +75,8 @@ fn get_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>
         round!((size.value as f64) / (q.value as f64) * 100.0, 3 ,f64).to_string() + "%"
     } else { String::new() })
 }
-fn format_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>, origin: Option<&PathBuf>) -> String {
-    let (display_path, s, u, usage) = get_path_detail(path, size, quota_size, origin);
+fn format_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasize>, origin: Option<&PathBuf>,human_readable: &bool) -> String {
+    let (display_path, s, u, usage) = get_path_detail(path, size, quota_size, origin,human_readable);
     let mark = if path.is_dir() {
         "dir"
     } else if path.is_file() {
@@ -82,26 +87,31 @@ fn format_path_detail(path: &PathBuf, size: Datasize, quota_size: &Option<Datasi
 
     format!("{:<5}{:<15} : {:>7}{:<3} {:>7}", mark, display_path, s, u, usage)
 }
-fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size: &Option<Datasize>) {
+fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size: &Option<Datasize>,human_readable: bool) {
     //let mut size: u64 = 0;
     let mut size_map: HashMap<PathBuf, u64> = HashMap::new();
+    let mut counted: HashSet<u64> = HashSet::new();
     for entry in WalkDir::new(origin).follow_links(include_symlink).into_iter().filter_map(
         |e| e.ok())
     {
         let target = entry.path().display();
         match entry.metadata() {
             Ok(m) => {
-                if entry.depth() == 1 {
-                    size_map.insert(entry.clone().into_path(), m.size());
-                } else {
-                    if let Some(parent) = size_map.clone().iter().find(|(p, _)| {
+                let ino = m.ino();
+                if !counted.contains(&ino)  {
+                    if entry.depth() == 1 {
+                        size_map.insert(entry.clone().into_path(), m.len() );
+                    }else if let Some(parent) = size_map.clone().iter().find(|(p, _)| {
                         entry.clone().into_path().starts_with(p)
-                    }) {
-                        *size_map.get_mut(parent.0).unwrap() += m.size()
+                    })
+                     {
+                        *size_map.get_mut(parent.0).unwrap() +=m.len()
                     }
+                    print!("\r\x1b[0K{}: {}", target, m.len());
+                    counted.insert(ino);
+                
                 }
-
-                print!("\r\x1b[0K{}: {}", target, m.size());
+                
             }
             Err(_) => {
                 println!("{}のサイズを取得できませんでした", target)
@@ -109,13 +119,13 @@ fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size:
         }
     }
     print!("\r\x1b[0K");
-    let mut total_size: u64 = 0;
+    let mut total_size: u64 = origin.metadata().unwrap().len();
     let mut size_vec: Vec<(&PathBuf, &u64)> = size_map.iter().map(|e| e).collect();
     size_vec.sort_by(|&a, &b| a.1.cmp(b.1));
 
     for (i, &(path, size)) in size_vec.iter().enumerate() {
         total_size += size;
-        let a = format_path_detail(path, Datasize::new(*size), quota_size, Some(origin));
+        let a = format_path_detail(path, Datasize::new(*size), quota_size, Some(origin),&human_readable);
         let output = match size_vec.len() - i - 1 {
             0 => Red.bold().paint(a),
             1 => Yellow.bold().paint(a),
@@ -125,7 +135,7 @@ fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size:
     }
 
 
-    println!("Total:\n{}", format_path_detail(origin, Datasize::new(total_size), quota_size, None));
+    println!("Total:\n{}", format_path_detail(origin, Datasize::new(total_size), quota_size, None,&human_readable));
     size_vec = size_vec.into_iter().filter(|(p, _)| {
         p.is_dir()
     }).collect();
@@ -139,7 +149,7 @@ fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size:
             .default(0)
             .max_length(5);
         for (p, s) in size_vec.clone() {
-            let a = get_path_detail(p, Datasize::new(*s), quota_size, Some(origin));
+            let a = get_path_detail(p, Datasize::new(*s), quota_size, Some(origin),&human_readable);
             selection_builder = selection_builder.clone().item(format!("{} {}{} {}", a.0, a.1, a.2, a.3))
         }
         let result = selection_builder.interact_opt();
@@ -148,7 +158,7 @@ fn size_cmd(ctx: &Argument, origin: &PathBuf, include_symlink: bool, quota_size:
                 if i == 0 {
                     return;
                 }
-                size_cmd(ctx, size_vec[i - 1].0, include_symlink, quota_size);
+                size_cmd(ctx, size_vec[i - 1].0, include_symlink, quota_size,human_readable);
             }
             _ => {}
         }
